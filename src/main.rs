@@ -1,4 +1,3 @@
-use anyhow;
 use axum::{
     extract::Path,
     handler::Handler,
@@ -73,6 +72,12 @@ impl From<anyhow::Error> for AppError {
     }
 }
 
+impl From<sqlx::Error> for AppError {
+    fn from(inner: sqlx::Error) -> Self {
+        AppError::InternalServerError(anyhow::Error::from(inner))
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, error_message) = match self {
@@ -109,13 +114,19 @@ struct UpdateTodo {
     done: Option<bool>,
 }
 
+impl UpdateTodo {
+    fn validate(&self) -> bool {
+        self.description.is_some() || self.done.is_some()
+    }
+}
+
 async fn add_todo(
     Extension(pool): Extension<PgPool>,
     Json(payload): Json<CreateTodo>,
 ) -> Result<String, AppError> {
     let rec = sqlx::query_as!(
         Todo,
-        r#"
+        r#"--sql
             INSERT INTO todos ( description )
             VALUES ( $1 )
             RETURNING *
@@ -123,8 +134,7 @@ async fn add_todo(
         payload.description,
     )
     .fetch_one(&pool)
-    .await
-    .map_err(|e| anyhow::Error::from(e))?;
+    .await?;
 
     Ok(rec.id.to_string())
 }
@@ -133,16 +143,15 @@ async fn delete_todo(
     Extension(pool): Extension<PgPool>,
     Path(id): Path<i64>,
 ) -> Result<String, AppError> {
-    sqlx::query_as!(
+    let _a = sqlx::query_as!(
         Todo,
-        r#"
-            DELETE FROM todos WHERE id = $1
-        "#,
+        r"--sql
+            DELETE FROM todos WHERE id = $1;
+        ",
         id,
     )
     .execute(&pool)
-    .await
-    .map_err(|e| anyhow::Error::from(e))?;
+    .await?;
 
     Ok(true.to_string())
 }
@@ -152,13 +161,13 @@ async fn update_todo(
     Json(payload): Json<UpdateTodo>,
     Path(id): Path<i64>,
 ) -> Result<Json<Todo>, AppError> {
-    if payload.description.is_none() && payload.done.is_none() {
+    if !payload.validate() {
         return Err(AppError::ValidationError);
     }
 
     let todo = sqlx::query_as!(
         Todo,
-        r#"
+        r#"--sql
             UPDATE
                 todos
             SET
@@ -174,8 +183,7 @@ async fn update_todo(
         id
     )
     .fetch_one(&pool)
-    .await
-    .map_err(|e| anyhow::Error::from(e))?;
+    .await?;
 
     Ok(Json(todo))
 }
@@ -186,14 +194,13 @@ async fn find_todo(
 ) -> Result<Json<Todo>, AppError> {
     let todo = sqlx::query_as!(
         Todo,
-        r#"
+        r#"--sql
             SELECT * FROM todos WHERE id = $1
         "#,
         id
     )
     .fetch_one(&pool)
-    .await
-    .map_err(|e| anyhow::Error::from(e))?;
+    .await?;
 
     Ok(Json(todo))
 }
@@ -201,46 +208,14 @@ async fn find_todo(
 async fn list_todos(Extension(pool): Extension<PgPool>) -> Result<Json<Vec<Todo>>, AppError> {
     let recs = sqlx::query_as!(
         Todo,
-        r#"
+        r#"--sql
             SELECT id, description, done
             FROM todos
             ORDER BY id
         "#
     )
     .fetch_all(&pool)
-    .await
-    .map_err(|e| anyhow::Error::from(e))?;
+    .await?;
 
     Ok(Json(recs))
 }
-
-// #[derive(Deserialize)]
-// struct CreateUser {
-//     username: String,
-// }
-
-// #[derive(Debug, Serialize, Deserialize, Clone, Eq, Hash, PartialEq)]
-// struct User {
-//     id: u64,
-//     username: String,
-// }
-
-// async fn create_user(payload: Json<CreateUser>) -> impl IntoResponse {
-//     let user = User {
-//         id: 1337,
-//         username: payload.0.username,
-//     };
-
-//     (StatusCode::CREATED, Json(user))
-// }
-
-// async fn json_hello(Path(name): Path<String>) -> impl IntoResponse {
-//     let greeting = name.as_str();
-//     let hello = String::from("Hello ");
-
-//     (
-//         StatusCode::OK,
-//         [("foo", "bar")],
-//         Json(json!({ "message": hello + greeting })),
-//     )
-// }
